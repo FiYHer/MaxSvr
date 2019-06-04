@@ -10,7 +10,6 @@
 using namespace std;
 #pragma comment(lib,"ws2_32.lib")
 
-
 typedef enum _IOType
 {
 	IO_ACCEPT=0x10,	//接受套接字
@@ -23,7 +22,6 @@ typedef struct _IOBuffer
 	WSAOVERLAPPED stOverlapped;//IO操作的重叠结构体
 	SOCKET sock;//客户端的套接字
 	char *szBuffer;//接收/发送数据缓冲区
-	int nBuffer;//缓冲区大小
 	long long nId;//序列号
 	IOType eType;//操作类型
 	_IOBuffer()
@@ -31,7 +29,14 @@ typedef struct _IOBuffer
 		memset(&stOverlapped, 0, sizeof(WSAOVERLAPPED));
 		sock = INVALID_SOCKET;
 		szBuffer = nullptr;
-		nBuffer = 0;
+		nId = 0;
+		eType = IO_ACCEPT;
+	}
+	void clear()
+	{
+		memset(&stOverlapped, 0, sizeof(WSAOVERLAPPED));
+		sock = INVALID_SOCKET;
+		szBuffer = nullptr;
 		nId = 0;
 		eType = IO_ACCEPT;
 	}
@@ -59,6 +64,20 @@ typedef struct _IOContext
 		nOutstandingSend = 0;
 		nCurrentId = 0;
 		nNextId = 0;
+		vOutOrderReadBuffer.clear();
+		memset(&stLock, 0, sizeof(CRITICAL_SECTION));
+	}
+	void clear()
+	{
+		sock = INVALID_SOCKET;
+		memset(&stLocalAddr, 0, sizeof(sockaddr_in));
+		memset(&stRemoteAddr, 0, sizeof(sockaddr_in));
+		bClose = false;
+		nOutstandingRecv = 0;
+		nOutstandingSend = 0;
+		nCurrentId = 0;
+		nNextId = 0;
+		vOutOrderReadBuffer.clear();
 		memset(&stLock, 0, sizeof(CRITICAL_SECTION));
 	}
 }IOContext,*PIOContext;
@@ -68,12 +87,12 @@ class MaxSvr
 protected:
 	//空闲Buffer内存池
 	vector<PIOBuffer> m_vFreeBuffer;
-	CRITICAL_SECTION m_stBufferLock;
+	CRITICAL_SECTION m_stFreeBufferLock;
 	int m_nMaxFreeBuffer;
 
 	//空闲Context内存池
 	vector<PIOContext> m_vFreeContext;
-	CRITICAL_SECTION m_stContextLock;
+	CRITICAL_SECTION m_stFreeContextLock;
 	int m_nMaxFreeContext;
 
 	//记录抛出的accept连接请求
@@ -85,7 +104,6 @@ protected:
 	vector<PIOContext> m_vConnectClient;
 	CRITICAL_SECTION m_stClientLock;
 	int m_nMaxConnectClient;
-
 protected:
 	HANDLE m_hAcceptEvent;//accept事件
 	HANDLE m_hRepostEvent;//需要重新投递accept事件
@@ -170,21 +188,30 @@ private:
 	//IO的处理
 	void HandleIOEvent(DWORD dwKey,PIOBuffer pBuffer,DWORD dwTran,int nError);
 
-private:
+	//处理Accept请求
+	void HandleAcceptEvent(DWORD dwTran, PIOBuffer pBuffer);
+
+	//处理Recv请求
+	void HandleRecvEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffer);
+
+	//处理Send请求
+	void HandleSendEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffer);
+
+protected:
 	//客户加入连接
-	void OnClientConnect(PIOContext pContext,PIOBuffer pBuffer);
+	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer) = 0;
 
 	//客户关闭连接
-	void OnClientClose(PIOContext pContext,PIOBuffer pBuffer);
+	void virtual OnClientClose(PIOContext pContext, PIOBuffer pBuffer) = 0;
 
 	//连接发生错误
-	void OnConnectErro(PIOContext pContext,PIOBuffer pBuffer,int nError);
+	void virtual OnConnectErro(PIOContext pContext, PIOBuffer pBuffer, int nError) = 0;
 
 	//发送操作完成
-	void OnSendFinish(PIOContext pContext,PIOBuffer pBuffer);
+	void virtual OnSendFinish(PIOContext pContext, PIOBuffer pBuffer) = 0;
 
 	//接收操作完成
-	void OnRecvFinish(PIOContext pContext,PIOBuffer pBuffer);
+	void virtual OnRecvFinish(PIOContext pContext, PIOBuffer pBuffer) = 0;
 
 public:
 	MaxSvr();

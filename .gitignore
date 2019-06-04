@@ -34,3 +34,5 @@
 Debug
 *.db
 *.exe
+*.ipch
+.vs
