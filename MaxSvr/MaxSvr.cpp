@@ -32,6 +32,7 @@ unsigned int _stdcall MaxSvr::_ListenThread(void* p)
 		pThis->DisplayErrorString("[监听线程]:申请事件数组失败");
 		exit(0);
 	}
+
 	int nIndexEvent = 0;
 	pEvent[nIndexEvent++] = pThis->m_hAcceptEvent;//0
 	pEvent[nIndexEvent++] = pThis->m_hRepostEvent;//1
@@ -83,7 +84,7 @@ unsigned int _stdcall MaxSvr::_ListenThread(void* p)
 		//超时了就检测连接时间
 		if (nEvent == WSA_WAIT_TIMEOUT)
 		{
-			EnterCriticalSection(&pThis->m_stAcceptLock);
+			CLock cLock(pThis->m_stAcceptLock);
 			int nTime;
 			int nLen = sizeof(int);
 			for (vector<PIOBuffer>::iterator it = pThis->m_vPostAccept.begin();
@@ -96,7 +97,6 @@ unsigned int _stdcall MaxSvr::_ListenThread(void* p)
 					(*it)->sock = INVALID_SOCKET;
 				}
 			}
-			LeaveCriticalSection(&pThis->m_stAcceptLock);
 		}
 		else
 		{
@@ -197,7 +197,7 @@ bool MaxSvr::CloseConnect(PIOContext pContext)
 
 	bool bHave = false;
 	//将Context从客户列表里面删除
-	EnterCriticalSection(&m_stClientLock);
+	CLock cLock(m_stClientLock);
 	for (vector<PIOContext>::iterator it = m_vConnectClient.begin();
 		it != m_vConnectClient.end(); it++)
 	{
@@ -208,17 +208,16 @@ bool MaxSvr::CloseConnect(PIOContext pContext)
 			break;
 		}
 	}
-	LeaveCriticalSection(&m_stClientLock);
+	cLock.UnLock();
 
 	//将套接字删除
-	EnterCriticalSection(&pContext->stLock);
+	CLock ccLock(pContext->stLock);
 	if (pContext->sock != INVALID_SOCKET)
 	{
 		closesocket(pContext->sock);
 		pContext->sock = INVALID_SOCKET;
 	}
 	pContext->bClose = true;
-	LeaveCriticalSection(&pContext->stLock);
 	return bHave;
 }
 
@@ -247,16 +246,14 @@ PIOBuffer MaxSvr::AllocateBuffer()
 	PIOBuffer pBuffer = nullptr;
 	bool bHave = false;
 
-	EnterCriticalSection(&m_stFreeBufferLock);
-	int nSize = m_vFreeBuffer.size();
-	if (nSize)
+	CLock cLock(m_stFreeBufferLock);
+	if (m_vFreeBuffer.size())
 	{
-		pBuffer = m_vFreeBuffer[nSize - 1];
-		//pBuffer = m_vFreeBuffer.back();//拿出最后一个地址
+		pBuffer = m_vFreeBuffer.back();//拿出最后一个地址
 		m_vFreeBuffer.pop_back();//删除
 		bHave = true;//拿到地址了
 	}
-	LeaveCriticalSection(&m_stFreeBufferLock);
+	cLock.UnLock();
 
 	if (!bHave)//上面没有拿到地址，就申请
 	{
@@ -287,7 +284,7 @@ void MaxSvr::ReleaseBuffer(PIOBuffer pBuffer)
 
 	bool bHave = false;
 
-	EnterCriticalSection(&m_stFreeBufferLock);
+	CLock cLock(m_stFreeBufferLock);
 	if (m_vFreeBuffer.size() <= m_nMaxFreeBuffer)
 	{
 		//保存缓冲区指针
@@ -299,9 +296,8 @@ void MaxSvr::ReleaseBuffer(PIOBuffer pBuffer)
 		//放进容器
 		m_vFreeBuffer.emplace_back(pBuffer);
 		bHave = true;
-
 	}
-	LeaveCriticalSection(&m_stFreeBufferLock);
+	cLock.UnLock();
 
 	//如果没有放进容器就释放内存
 	if (!bHave)
@@ -314,6 +310,7 @@ void MaxSvr::ReleaseBuffer(PIOBuffer pBuffer)
 
 void MaxSvr::ReleaseFreeBuffer()
 {
+	CLock cLock(m_stFreeBufferLock);
 	EnterCriticalSection(&m_stFreeBufferLock);
 	for (vector<PIOBuffer>::iterator it = m_vFreeBuffer.begin();
 		it != m_vFreeBuffer.end(); it++)
@@ -322,7 +319,6 @@ void MaxSvr::ReleaseFreeBuffer()
 		delete (*it);//释放内存
 	}
 	m_vFreeBuffer.clear();//清空
-	LeaveCriticalSection(&m_stFreeBufferLock);
 }
 
 PIOContext MaxSvr::AllocateContext(SOCKET sock)
@@ -334,7 +330,7 @@ PIOContext MaxSvr::AllocateContext(SOCKET sock)
 	PIOContext pContext = nullptr;
 	bool bHave = false;
 	//如果空闲链表里面有内存的话，直接拿来使用
-	EnterCriticalSection(&m_stFreeContextLock);
+	CLock cLock(m_stFreeContextLock);
 	int nSize = m_vFreeContext.size();
 	if (nSize)
 	{
@@ -343,7 +339,8 @@ PIOContext MaxSvr::AllocateContext(SOCKET sock)
 		m_vFreeContext.pop_back();
 		bHave = true;
 	}
-	LeaveCriticalSection(&m_stFreeContextLock);
+	cLock.UnLock();
+
 	//如果没拿到的话，直接申请
 	if (!bHave)
 	{
@@ -373,26 +370,26 @@ void MaxSvr::ReleaseContext(PIOContext pContext)
 	bool bHave = false;
 
 	//如果有乱序的Buffer，那就先释放
+	CLock cLock(pContext->stLock);
 	for (vector<PIOBuffer>::iterator it = pContext->vOutOrderReadBuffer.begin();
 		it != pContext->vOutOrderReadBuffer.end(); it++)
 	{
 		ReleaseBuffer((*it));
 	}
 	pContext->vOutOrderReadBuffer.clear();
+	cLock.UnLock();
 
-	EnterCriticalSection(&m_stFreeContextLock);
+	CLock ccLock(m_stFreeContextLock);
 	cout << "地址 [" << pContext << "] 入栈:" << GetCurrentThreadId() << endl;
 	if (m_vFreeContext.size() <= m_nMaxFreeContext)
 	{
 		//保存一下这个关键段
 		CRITICAL_SECTION stLock = pContext->stLock;
-		memcpy(&stLock, &pContext->stLock, sizeof(CRITICAL_SECTION));
 		pContext->clear();
-		memcpy(&pContext->stLock, &stLock, sizeof(CRITICAL_SECTION));
+		pContext->stLock = stLock;
 		m_vFreeContext.emplace_back(pContext);
 		bHave = true;
 	}
-	LeaveCriticalSection(&m_stFreeContextLock);
 
 	if (!bHave)
 	{
@@ -404,7 +401,7 @@ void MaxSvr::ReleaseContext(PIOContext pContext)
 
 void MaxSvr::ReleaseFreeContext()
 {
-	EnterCriticalSection(&m_stFreeContextLock);
+	CLock cLock(m_stFreeContextLock);
 	for (vector<PIOContext>::iterator it = m_vFreeContext.begin();
 		it != m_vFreeContext.end(); it++)
 	{
@@ -412,7 +409,6 @@ void MaxSvr::ReleaseFreeContext()
 		delete (*it);
 	}
 	m_vFreeContext.clear();//清空所有
-	LeaveCriticalSection(&m_stFreeContextLock);
 }
 
 bool MaxSvr::AddConnect(PIOContext pContext)
@@ -421,14 +417,12 @@ bool MaxSvr::AddConnect(PIOContext pContext)
 		return false;
 
 	bool bHave = false;
-	EnterCriticalSection(&m_stClientLock);
+	CLock cLock(m_stClientLock);
 	if (m_vConnectClient.size() <= m_nMaxConnectClient)
 	{
 		m_vConnectClient.emplace_back(pContext);
 		bHave = true;
 	}
-	LeaveCriticalSection(&m_stClientLock);
-
 	return bHave;
 }
 
@@ -436,18 +430,15 @@ bool MaxSvr::InsertAccept(PIOBuffer pBuffer)
 {
 	if (!pBuffer)
 		return false;
-
-	EnterCriticalSection(&m_stAcceptLock);
+	CLock cLock(m_stAcceptLock);
 	m_vPostAccept.emplace_back(pBuffer);
-	LeaveCriticalSection(&m_stAcceptLock);
-
 	return true;
 }
 
 bool MaxSvr::RemoveAccept(PIOBuffer pBuffer)
 {
 	bool bHave = false;
-	EnterCriticalSection(&m_stAcceptLock);
+	CLock cLock(m_stAcceptLock);;
 	for (vector<PIOBuffer>::iterator it = m_vPostAccept.begin();
 		it != m_vPostAccept.end(); it++) 
 	{
@@ -458,7 +449,6 @@ bool MaxSvr::RemoveAccept(PIOBuffer pBuffer)
 			break;
 		}
 	}
-	LeaveCriticalSection(&m_stAcceptLock);
 	return bHave;
 }
 
@@ -552,7 +542,7 @@ bool MaxSvr::PostRecv(PIOContext pContext, PIOBuffer pBuffer)
 
 	pBuffer->eType = IO_RECV;
 	bool bHave = false;
-	EnterCriticalSection(&pContext->stLock);
+	CLock cLock(pContext->stLock);
 	pBuffer->nId = pContext->nNextId;
 	DWORD dwByte = 0;
 	DWORD dwFalg = 0;
@@ -566,7 +556,6 @@ bool MaxSvr::PostRecv(PIOContext pContext, PIOBuffer pBuffer)
 		pContext->nNextId++;
 		bHave = true;
 	}
-	LeaveCriticalSection(&pContext->stLock);
 	return bHave;
 }
 
@@ -579,12 +568,12 @@ void MaxSvr::HandleIOEvent(DWORD dwKey, PIOBuffer pBuffer, DWORD dwTran, int nEr
 	if (pContext)
 	{
 		//相关的请求数量进行减少
-		EnterCriticalSection(&pContext->stLock);
+		CLock cLock(pContext->stLock);
 		if (pBuffer->eType == IO_RECV)
 			pContext->nOutstandingRecv--;
 		else if (pBuffer->eType == IO_SEND)
 			pContext->nOutstandingSend--;
-		LeaveCriticalSection(&pContext->stLock);
+		cLock.UnLock();
 
 		if (pContext->bClose)//但是这个套接字被关闭了
 		{
@@ -891,19 +880,17 @@ void MaxSvr::StopServer()
 
 void MaxSvr::CloseConnects()
 {
-	EnterCriticalSection(&m_stClientLock);
+	CLock cLock(m_stClientLock);
 	for (vector<PIOContext>::iterator it = m_vConnectClient.begin();
 		it != m_vConnectClient.end(); it++)
 	{
-		EnterCriticalSection(&(*it)->stLock);
+		CLock ccLock((*it)->stLock);
 		if ((*it)->sock != INVALID_SOCKET)
 		{
 			closesocket((*it)->sock);
 			(*it)->sock = INVALID_SOCKET;
 		}
 		(*it)->bClose = true;
-		LeaveCriticalSection(&(*it)->stLock);
 	}
 	m_vConnectClient.clear();//将所有的客户全部删除
-	LeaveCriticalSection(&m_stClientLock);
 }

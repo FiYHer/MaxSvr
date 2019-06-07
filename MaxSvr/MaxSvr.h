@@ -19,11 +19,11 @@ typedef enum _IOType
 
 typedef struct _IOBuffer
 {
-	WSAOVERLAPPED stOverlapped;//IO操作的重叠结构体
-	SOCKET sock;//客户端的套接字
-	char *szBuffer;//接收/发送数据缓冲区
-	long long nId;//序列号
-	IOType eType;//操作类型
+	WSAOVERLAPPED stOverlapped;	//IO操作的重叠结构体
+	SOCKET sock;				//客户端的套接字
+	char *szBuffer;				//接收 发送数据缓冲区
+	long long nId;				//序列号
+	IOType eType;				//操作类型
 	_IOBuffer()
 	{
 		memset(&stOverlapped, 0, sizeof(WSAOVERLAPPED));
@@ -44,16 +44,16 @@ typedef struct _IOBuffer
 
 typedef struct _IOContext
 {
-	SOCKET sock;//套接字
-	sockaddr_in stLocalAddr;//本地地址
-	sockaddr_in stRemoteAddr;//远程地址
-	bool bClose;//套接字是否关闭
-	int nOutstandingRecv;//抛出的Recv数量
-	int nOutstandingSend;//抛出的Send数量
-	long long nCurrentId;//当前的ID
-	long long nNextId;//下一个的ID
-	vector<PIOBuffer> vOutOrderReadBuffer;//没有按顺序完成的读取IO
-	CRITICAL_SECTION stLock;//关键段
+	SOCKET sock;							//套接字
+	sockaddr_in stLocalAddr;				//本地地址
+	sockaddr_in stRemoteAddr;				//远程地址
+	bool bClose;							//套接字是否关闭
+	int nOutstandingRecv;					//抛出的Recv数量
+	int nOutstandingSend;					//抛出的Send数量
+	long long nCurrentId;					//当前的ID
+	long long nNextId;						//下一个的ID
+	vector<PIOBuffer> vOutOrderReadBuffer;	//没有按顺序完成的读取IO
+	CRITICAL_SECTION stLock;				//关键段
 	_IOContext()
 	{
 		sock = INVALID_SOCKET;
@@ -199,19 +199,19 @@ private:
 
 protected:
 	//客户加入连接
-	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer) = 0;
+	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer) {};
 
 	//客户关闭连接
-	void virtual OnClientClose(PIOContext pContext, PIOBuffer pBuffer) = 0;
+	void virtual OnClientClose(PIOContext pContext, PIOBuffer pBuffer) {};
 
 	//连接发生错误
-	void virtual OnConnectErro(PIOContext pContext, PIOBuffer pBuffer, int nError) = 0;
+	void virtual OnConnectErro(PIOContext pContext, PIOBuffer pBuffer, int nError) {};
 
 	//发送操作完成
-	void virtual OnSendFinish(PIOContext pContext, PIOBuffer pBuffer) = 0;
+	void virtual OnSendFinish(PIOContext pContext, PIOBuffer pBuffer) {};
 
 	//接收操作完成
-	void virtual OnRecvFinish(PIOContext pContext, PIOBuffer pBuffer) = 0;
+	void virtual OnRecvFinish(PIOContext pContext, PIOBuffer pBuffer) {};
 
 public:
 	MaxSvr();
@@ -282,6 +282,35 @@ public:
 	inline int GetConnectCount()
 	{
 		return m_vConnectClient.size();
+	}
+};
+
+
+//协助线程同步
+class CLock
+{
+private:
+	CRITICAL_SECTION m_stLock;
+	bool m_bUnLock;
+public:
+	CLock(CRITICAL_SECTION stLock)
+	{
+		m_stLock = stLock;
+		EnterCriticalSection(&m_stLock);
+		m_bUnLock = false;
+	}
+	~CLock()
+	{
+		UnLock();
+	}
+public:
+	void UnLock()
+	{
+		if (!m_bUnLock)
+		{
+			LeaveCriticalSection(&m_stLock);
+			m_bUnLock = true;
+		}
 	}
 };
 

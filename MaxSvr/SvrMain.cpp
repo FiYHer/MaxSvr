@@ -4,14 +4,8 @@
 class MyServer:public MaxSvr
 {
 public:
-	MyServer()
-	{
-
-	}
-	~MyServer()
-	{
-
-	}
+	MyServer(){}
+	~MyServer(){}
 
 	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer)
 	{
