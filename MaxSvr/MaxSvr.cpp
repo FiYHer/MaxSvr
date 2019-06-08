@@ -84,7 +84,7 @@ unsigned int _stdcall MaxSvr::_ListenThread(void* p)
 		//超时了就检测连接时间
 		if (nEvent == WSA_WAIT_TIMEOUT)
 		{
-			CLock cLock(pThis->m_stAcceptLock);
+			CLock cLock(&pThis->m_stAcceptLock);
 			int nTime;
 			int nLen = sizeof(int);
 			for (vector<PIOBuffer>::iterator it = pThis->m_vPostAccept.begin();
@@ -197,7 +197,7 @@ bool MaxSvr::CloseConnect(PIOContext pContext)
 
 	bool bHave = false;
 	//将Context从客户列表里面删除
-	CLock cLock(m_stClientLock);
+	CLock cLock(&m_stClientLock);
 	for (vector<PIOContext>::iterator it = m_vConnectClient.begin();
 		it != m_vConnectClient.end(); it++)
 	{
@@ -211,7 +211,7 @@ bool MaxSvr::CloseConnect(PIOContext pContext)
 	cLock.UnLock();
 
 	//将套接字删除
-	CLock ccLock(pContext->stLock);
+	CLock ccLock(&pContext->stLock);
 	if (pContext->sock != INVALID_SOCKET)
 	{
 		closesocket(pContext->sock);
@@ -246,7 +246,7 @@ PIOBuffer MaxSvr::AllocateBuffer()
 	PIOBuffer pBuffer = nullptr;
 	bool bHave = false;
 
-	CLock cLock(m_stFreeBufferLock);
+	CLock cLock(&m_stFreeBufferLock);
 	if (m_vFreeBuffer.size())
 	{
 		pBuffer = m_vFreeBuffer.back();//拿出最后一个地址
@@ -282,9 +282,8 @@ void MaxSvr::ReleaseBuffer(PIOBuffer pBuffer)
 	if (!pBuffer)
 		return;
 
+	CLock cLock(&m_stFreeBufferLock);
 	bool bHave = false;
-
-	CLock cLock(m_stFreeBufferLock);
 	if (m_vFreeBuffer.size() <= m_nMaxFreeBuffer)
 	{
 		//保存缓冲区指针
@@ -310,8 +309,7 @@ void MaxSvr::ReleaseBuffer(PIOBuffer pBuffer)
 
 void MaxSvr::ReleaseFreeBuffer()
 {
-	CLock cLock(m_stFreeBufferLock);
-	EnterCriticalSection(&m_stFreeBufferLock);
+	CLock cLock(&m_stFreeBufferLock);
 	for (vector<PIOBuffer>::iterator it = m_vFreeBuffer.begin();
 		it != m_vFreeBuffer.end(); it++)
 	{
@@ -330,7 +328,7 @@ PIOContext MaxSvr::AllocateContext(SOCKET sock)
 	PIOContext pContext = nullptr;
 	bool bHave = false;
 	//如果空闲链表里面有内存的话，直接拿来使用
-	CLock cLock(m_stFreeContextLock);
+	CLock cLock(&m_stFreeContextLock);
 	int nSize = m_vFreeContext.size();
 	if (nSize)
 	{
@@ -370,7 +368,7 @@ void MaxSvr::ReleaseContext(PIOContext pContext)
 	bool bHave = false;
 
 	//如果有乱序的Buffer，那就先释放
-	CLock cLock(pContext->stLock);
+	CLock cLock(&pContext->stLock);
 	for (vector<PIOBuffer>::iterator it = pContext->vOutOrderReadBuffer.begin();
 		it != pContext->vOutOrderReadBuffer.end(); it++)
 	{
@@ -379,7 +377,7 @@ void MaxSvr::ReleaseContext(PIOContext pContext)
 	pContext->vOutOrderReadBuffer.clear();
 	cLock.UnLock();
 
-	CLock ccLock(m_stFreeContextLock);
+	CLock ccLock(&m_stFreeContextLock);
 	cout << "地址 [" << pContext << "] 入栈:" << GetCurrentThreadId() << endl;
 	if (m_vFreeContext.size() <= m_nMaxFreeContext)
 	{
@@ -401,7 +399,7 @@ void MaxSvr::ReleaseContext(PIOContext pContext)
 
 void MaxSvr::ReleaseFreeContext()
 {
-	CLock cLock(m_stFreeContextLock);
+	CLock cLock(&m_stFreeContextLock);
 	for (vector<PIOContext>::iterator it = m_vFreeContext.begin();
 		it != m_vFreeContext.end(); it++)
 	{
@@ -417,7 +415,7 @@ bool MaxSvr::AddConnect(PIOContext pContext)
 		return false;
 
 	bool bHave = false;
-	CLock cLock(m_stClientLock);
+	CLock cLock(&m_stClientLock);
 	if (m_vConnectClient.size() <= m_nMaxConnectClient)
 	{
 		m_vConnectClient.emplace_back(pContext);
@@ -430,7 +428,7 @@ bool MaxSvr::InsertAccept(PIOBuffer pBuffer)
 {
 	if (!pBuffer)
 		return false;
-	CLock cLock(m_stAcceptLock);
+	CLock cLock(&m_stAcceptLock);
 	m_vPostAccept.emplace_back(pBuffer);
 	return true;
 }
@@ -438,7 +436,7 @@ bool MaxSvr::InsertAccept(PIOBuffer pBuffer)
 bool MaxSvr::RemoveAccept(PIOBuffer pBuffer)
 {
 	bool bHave = false;
-	CLock cLock(m_stAcceptLock);;
+	CLock cLock(&m_stAcceptLock);;
 	for (vector<PIOBuffer>::iterator it = m_vPostAccept.begin();
 		it != m_vPostAccept.end(); it++) 
 	{
@@ -524,9 +522,8 @@ bool MaxSvr::PostSend(PIOContext pContext, PIOBuffer pBuffer)
 	int nRet = WSASend(pContext->sock, &stBuf, 1, &dwByte, dwFlag, &pBuffer->stOverlapped, 0);
 	if (!nRet || WSAGetLastError() == WSA_IO_PENDING)
 	{
-		EnterCriticalSection(&pContext->stLock);
+		CLock cLock(&pContext->stLock);
 		pContext->nOutstandingSend++;
-		LeaveCriticalSection(&pContext->stLock);
 		return true;
 	}
 	return false;
@@ -542,7 +539,7 @@ bool MaxSvr::PostRecv(PIOContext pContext, PIOBuffer pBuffer)
 
 	pBuffer->eType = IO_RECV;
 	bool bHave = false;
-	CLock cLock(pContext->stLock);
+	CLock cLock(&pContext->stLock);
 	pBuffer->nId = pContext->nNextId;
 	DWORD dwByte = 0;
 	DWORD dwFalg = 0;
@@ -568,7 +565,7 @@ void MaxSvr::HandleIOEvent(DWORD dwKey, PIOBuffer pBuffer, DWORD dwTran, int nEr
 	if (pContext)
 	{
 		//相关的请求数量进行减少
-		CLock cLock(pContext->stLock);
+		CLock cLock(&pContext->stLock);
 		if (pBuffer->eType == IO_RECV)
 			pContext->nOutstandingRecv--;
 		else if (pBuffer->eType == IO_SEND)
@@ -578,7 +575,10 @@ void MaxSvr::HandleIOEvent(DWORD dwKey, PIOBuffer pBuffer, DWORD dwTran, int nEr
 		if (pContext->bClose)//但是这个套接字被关闭了
 		{
 			if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
+			{
+				cout << "---------------------------582释放的" << endl;
 				ReleaseContext(pContext);
+			}
 			ReleaseBuffer(pBuffer);
 			return;
 		}
@@ -597,7 +597,10 @@ void MaxSvr::HandleIOEvent(DWORD dwKey, PIOBuffer pBuffer, DWORD dwTran, int nEr
 			//关闭连接
 			CloseConnect(pContext);
 			if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
+			{
+				cout << "604释放的" << endl;
 				ReleaseContext(pContext);
+			}
 		}
 		else//客户出错
 		{
@@ -682,6 +685,7 @@ void MaxSvr::HandleAcceptEvent(DWORD dwTran, PIOBuffer pBuffer)
 			else
 			{
 				CloseConnect(pNewClient);
+				cout << "//////////////////////////////691释放的" << endl;
 				ReleaseContext(pNewClient);
 			}
 		}
@@ -702,8 +706,11 @@ void MaxSvr::HandleRecvEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffe
 	{
 		OnClientClose(pContext, pBuffer);
 		CloseConnect(pContext);
-		if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
-			ReleaseContext(pContext);
+		//if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
+		//{
+		//	cout << "(714释放的)" << endl;
+		//	ReleaseContext(pContext);
+		//}
 		ReleaseBuffer(pBuffer);
 	}
 	else
@@ -737,8 +744,11 @@ void MaxSvr::HandleSendEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffe
 	{
 		OnClientClose(pContext, pBuffer);
 		CloseConnect(pContext);
-		if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
-			ReleaseContext(pContext);
+		//if (!pContext->nOutstandingRecv && !pContext->nOutstandingSend)
+		//{
+		//	cout << "752释放的" << endl;
+		//	ReleaseContext(pContext);
+		//}
 		ReleaseBuffer(pBuffer);
 	}
 	else
@@ -880,11 +890,11 @@ void MaxSvr::StopServer()
 
 void MaxSvr::CloseConnects()
 {
-	CLock cLock(m_stClientLock);
+	CLock cLock(&m_stClientLock);
 	for (vector<PIOContext>::iterator it = m_vConnectClient.begin();
 		it != m_vConnectClient.end(); it++)
 	{
-		CLock ccLock((*it)->stLock);
+		CLock ccLock(&(*it)->stLock);
 		if ((*it)->sock != INVALID_SOCKET)
 		{
 			closesocket((*it)->sock);

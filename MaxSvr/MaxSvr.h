@@ -290,13 +290,13 @@ public:
 class CLock
 {
 private:
-	CRITICAL_SECTION m_stLock;
+	PCRITICAL_SECTION m_pLock;
 	bool m_bUnLock;
 public:
-	CLock(CRITICAL_SECTION stLock)
+	CLock(PCRITICAL_SECTION stLock)
 	{
-		m_stLock = stLock;
-		EnterCriticalSection(&m_stLock);
+		m_pLock = stLock;
+		EnterCriticalSection(m_pLock);
 		m_bUnLock = false;
 	}
 	~CLock()
@@ -308,7 +308,7 @@ public:
 	{
 		if (!m_bUnLock)
 		{
-			LeaveCriticalSection(&m_stLock);
+			LeaveCriticalSection(m_pLock);
 			m_bUnLock = true;
 		}
 	}
