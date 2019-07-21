@@ -1,53 +1,47 @@
 
 #include "MaxSvr.h"
 
-class MyServer:public MaxSvr
+class MyClass : public MaxSvr
 {
 public:
-	MyServer(){}
-	~MyServer(){}
-
-	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer)
+	MyClass():MaxSvr()
 	{
-		cout << "[客户加入连接 ]: "
-			<< inet_ntoa(pContext->stRemoteAddr.sin_addr)
-			<< " 当前连接数量: "
-			<< m_vConnectClient.size()
-			<< endl;
+
 	}
-
-	void virtual OnClientClose(PIOContext pContext, PIOBuffer pBuffer)
+	~MyClass()
 	{
-		cout << "[客户关闭连接]: "
-			<< inet_ntoa(pContext->stRemoteAddr.sin_addr)
-			<< endl;
+
 	}
-
-	void virtual OnConnectErro(PIOContext pContext, PIOBuffer pBuffer, int nError)
+	virtual void OnEvent(EventType eType,void* pData,
+		PIOBuffer pBuffer, PIOContext pContext)
 	{
-		cout << "[连接发生错误]: "
-			<< inet_ntoa(pContext->stRemoteAddr.sin_addr)
-			<< ": "
-			<< nError
-			<< endl;
-	}
-
-	void virtual OnSendFinish(PIOContext pContext, PIOBuffer pBuffer)
-	{
-		cout << "[发送操作完成]: "
-			<< inet_ntoa(pContext->stRemoteAddr.sin_addr)
-			<< ": "
-			<< pBuffer->szBuffer
-			<< endl;
-	}
-
-	void virtual OnRecvFinish(PIOContext pContext, PIOBuffer pBuffer)
-	{
-		cout << "[接收操作完成]: "
-			<< inet_ntoa(pContext->stRemoteAddr.sin_addr)
-			<< ": "
-			<< pBuffer->szBuffer
-			<< endl;
+		switch (eType)
+		{
+		case Event_Error:
+			printf("[发生错误] IP:%s - Sock:%d - Count:%d - Error:%d\n",
+				inet_ntoa(pContext->stRemoteAddr.sin_addr), pContext->sock,
+				GetConnectCount(), (int)pData);
+			break;
+		case Event_Connect:
+			printf("[客户连接] IP:%s - Sock:%d - Count:%d \n",
+				inet_ntoa(pContext->stRemoteAddr.sin_addr), pContext->sock,
+				GetConnectCount());
+			break;
+		case Event_Close:
+			printf("[客户退出] IP:%s - Sock:%d - Count:%d \n",
+				inet_ntoa(pContext->stRemoteAddr.sin_addr), pContext->sock,
+				GetConnectCount());
+			break;
+		case Event_Recv:
+			printf("[接收数据] Buffer:%s - IP:%s - Sock:%d - Count:%d \n",
+				(char*)pBuffer->pBuf, inet_ntoa(pContext->stRemoteAddr.sin_addr),
+				pContext->sock, GetConnectCount());
+			break;
+		case Event_Send:
+			printf("[发送数据] Buffer:%s - IP:%s - Sock:%d \n", (char*)pBuffer->pBuf,
+				inet_ntoa(pContext->stRemoteAddr.sin_addr), pContext->sock);
+			break;
+		}
 	}
 };
 
@@ -55,15 +49,13 @@ int main(_In_ int argc,
 	_In_reads_(argc) _Pre_z_ char** argv,
 	_In_z_ char** envp)
 {
-	MyServer MyTest;
-	MyTest.SetThreadCount(4);
-	if (MyTest.StartServer())
+	MyClass Test;
+	//Test.SetHandleThreadCount(1);
+	if (Test.StartServer())
 	{
-		cout << "服务开启成功" << endl;
-		HANDLE hEvent = CreateEventA(0, false, false, 0);
+		HANDLE hEvent = CreateEventA(0, 0, 0, 0);
 		WaitForSingleObject(hEvent, INFINITE);
 	}
-	else
-		cout << "服务开启失败" << endl;
+
 	return 0;
 }

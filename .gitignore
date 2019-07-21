@@ -36,3 +36,5 @@ Debug
 *.exe
 *.ipch
 .vs
+Debug
+Release

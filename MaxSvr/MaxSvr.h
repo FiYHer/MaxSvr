@@ -4,313 +4,184 @@
 #include <mswsock.h>
 #include <Windows.h>
 #include <process.h>
-
-#include <vector>
-#include <iostream>
-using namespace std;
 #pragma comment(lib,"ws2_32.lib")
+
+#include <list>
+#include <mutex>
 
 typedef enum _IOType
 {
-	IO_ACCEPT=0x10,	//接受套接字
+	IO_ACCEPT,		//接受套接字
 	IO_RECV,		//接收数据
 	IO_SEND			//发送数据
 }IOType;
 
+typedef enum _EventType
+{
+	Event_Error,	//发生错误
+	Event_Connect,	//客户连接
+	Event_Close,	//客户关闭
+	Event_Recv,		//接收数据
+	Event_Send		//发生数据
+}EventType;
+
 typedef struct _IOBuffer
 {
-	WSAOVERLAPPED stOverlapped;	//IO操作的重叠结构体
-	SOCKET sock;				//客户端的套接字
-	char *szBuffer;				//接收 发送数据缓冲区
-	long long nId;				//序列号
+	WSAOVERLAPPED stOverlapped;	//重叠操作
+	SOCKET sock;				//套接字
+	void* pBuf;					//缓冲区
 	IOType eType;				//操作类型
 	_IOBuffer()
 	{
 		memset(&stOverlapped, 0, sizeof(WSAOVERLAPPED));
 		sock = INVALID_SOCKET;
-		szBuffer = nullptr;
-		nId = 0;
-		eType = IO_ACCEPT;
-	}
-	void clear()
-	{
-		memset(&stOverlapped, 0, sizeof(WSAOVERLAPPED));
-		sock = INVALID_SOCKET;
-		szBuffer = nullptr;
-		nId = 0;
+		pBuf = 0;
 		eType = IO_ACCEPT;
 	}
 }IOBuffer,*PIOBuffer;
 
 typedef struct _IOContext
 {
-	SOCKET sock;							//套接字
-	sockaddr_in stLocalAddr;				//本地地址
-	sockaddr_in stRemoteAddr;				//远程地址
-	bool bClose;							//套接字是否关闭
-	int nOutstandingRecv;					//抛出的Recv数量
-	int nOutstandingSend;					//抛出的Send数量
-	long long nCurrentId;					//当前的ID
-	long long nNextId;						//下一个的ID
-	vector<PIOBuffer> vOutOrderReadBuffer;	//没有按顺序完成的读取IO
-	CRITICAL_SECTION stLock;				//关键段
+	SOCKET sock;								//套接字
+	sockaddr_in stLocalAddr;					//本地地址
+	sockaddr_in stRemoteAddr;					//远程地址
+	int nOutstandingRecv;						//抛出Recv的数量
+	int nOutstandingSend;						//抛出Send的数量
+	bool bClose;								//套接字是否关闭
+	std::mutex cMutex;							//互斥体
 	_IOContext()
 	{
 		sock = INVALID_SOCKET;
 		memset(&stLocalAddr, 0, sizeof(sockaddr_in));
 		memset(&stRemoteAddr, 0, sizeof(sockaddr_in));
 		bClose = false;
-		nOutstandingRecv = 0;
-		nOutstandingSend = 0;
-		nCurrentId = 0;
-		nNextId = 0;
-		vOutOrderReadBuffer.clear();
-		memset(&stLock, 0, sizeof(CRITICAL_SECTION));
-	}
-	void clear()
-	{
-		sock = INVALID_SOCKET;
-		memset(&stLocalAddr, 0, sizeof(sockaddr_in));
-		memset(&stRemoteAddr, 0, sizeof(sockaddr_in));
-		bClose = false;
-		nOutstandingRecv = 0;
-		nOutstandingSend = 0;
-		nCurrentId = 0;
-		nNextId = 0;
-		vOutOrderReadBuffer.clear();
-		memset(&stLock, 0, sizeof(CRITICAL_SECTION));
 	}
 }IOContext,*PIOContext;
 
 class MaxSvr
 {
-protected:
-	//空闲Buffer内存池
-	vector<PIOBuffer> m_vFreeBuffer;
-	CRITICAL_SECTION m_stFreeBufferLock;
-	int m_nMaxFreeBuffer;
+private:
+	std::list<PIOBuffer> m_cListBufferFree;		//空闲Buffer列表
+	std::mutex m_cMutexBufferFree;				//空闲Buffer列表互斥体
+	int m_nMaxBufferFree;						//空闲Buffer列表最大数量
 
-	//空闲Context内存池
-	vector<PIOContext> m_vFreeContext;
-	CRITICAL_SECTION m_stFreeContextLock;
-	int m_nMaxFreeContext;
+	std::list<PIOContext> m_cListContextFree;	//空闲Context列表
+	std::mutex m_cMutexContextFree;				//空闲Context列表互斥体	
+	int m_nMaxContextFree;						//空闲Context列表最大数量
 
-	//记录抛出的accept连接请求
-	vector<PIOBuffer> m_vPostAccept;
-	CRITICAL_SECTION m_stAcceptLock;
-	int m_nMaxAccept;
+	std::list<PIOBuffer> m_cListBufferAccept;	//抛出Accept列表
+	std::mutex m_cMutexBufferAccept;			//抛出Accept列表互斥体
+	int m_nMaxBufferAccept;						//抛出Accept列表最大数量
 
-	//客户连接列表
-	vector<PIOContext> m_vConnectClient;
-	CRITICAL_SECTION m_stClientLock;
-	int m_nMaxConnectClient;
-protected:
-	HANDLE m_hAcceptEvent;//accept事件
-	HANDLE m_hRepostEvent;//需要重新投递accept事件
-	long m_lRepostCount;//投递的数量
+	std::list<PIOContext> m_cListContextClient;	//连接Client列表
+	std::mutex m_cMutexContextClient;			//连接Client列表互斥体
+	int m_nMaxContextClient;					//连接Client列表最大数量
 
-	int m_nThreadCount;//工作者线程的数量
-	int m_nBufferSize;//发送/接收缓冲区大小
-	int m_nPort;//服务器的监听端口
+	HANDLE m_hEventArray[2];	//Accept事件和Repost事件
+	long m_lRepostCount;		//投递的数量
 
-	int m_nInitAccept;//初始化抛出的accept请求
-	int m_nInitRecv;//初始化抛出的Recv请求
+	int m_nHandleThreadCount;	//工作者线程数量
+	int m_nBufferSize;			//缓冲区大小
+	int m_nPort;				//服务器监听端口
 
-	int m_nMaxSend;//最大发送数据的数量，防止一直发送不接收
+	int m_nInitAcceptCount;		//初始化时抛出Accept请求的数量
+	int m_nInitRecvCount;		//初始化时抛出Recv请求的数量
 
-	HANDLE m_hListen;//监听线程
-	HANDLE m_hIOComplete;//完成端口
-	SOCKET m_sock;//监听套接字
+	HANDLE m_hIOComplete;		//完成端口
+	SOCKET m_sock;				//监听套接字
 
-	//有关的网络函数
 	LPFN_ACCEPTEX m_fAcceptEx;
 	LPFN_GETACCEPTEXSOCKADDRS m_fGetAcceptExSockaddrs;
 
-	bool m_bListenExit;//监听线程的退出
-	bool m_bWorkStart;//工作线程的开始
+	bool m_bListenExit;			//监听线程的退出
+	bool m_bWorkStart;			//工作线程的开始
 
-private:
-	//监听线程
-	static unsigned int _stdcall _ListenThread(void* p);
+protected:
+	static void _ListenThread(MaxSvr* pThis);			//监听线程
+	static void _WorkerThread(MaxSvr* pThis);			//工作线程
 
-	//工作线程
-	static unsigned int _stdcall _WorkThread(void* p);
+	bool CloseConnect(PIOContext pContext);				//关闭一个连接
+	bool AddConnect(PIOContext pContext);				//添加一个连接
 
-private:
-	//关闭一个连接
-	bool CloseConnect(PIOContext pContext);
+	bool SendBuffer(PIOContext pContext,
+		void* pData,int nSize);							//向指定的客户发送数据
 
-	//向指定的客户发送数据
-	bool SendBuffer(PIOContext pContext, const char* szBuffer);
+	PIOBuffer AllocateBuffer();							//申请Buffer
+	void ReleaseBuffer(PIOBuffer pBuffer);				//释放Buffer
+	void ReleaseFreeBuffer();							//清空空闲Buffer
 
-	//显示错误信息
-	void DisplayErrorString(const char* szInfo);
-private:
-	//申请Buffer
-	PIOBuffer AllocateBuffer();
+	PIOContext AllocateContext(SOCKET sock);			//申请Context
+	void ReleaseContext(PIOContext pContext);			//释放Context
+	void ReleaseFreeContext();							//清空空闲Context
+		
+	bool InsertAccept(PIOBuffer pBuffer);				//插入一个Accept请求
+	bool RemoveAccept(PIOBuffer pBuffer);				//删除一个Accept请求
 
-	//释放Buffer
-	void ReleaseBuffer(PIOBuffer pBuffer);
-
-	//清空空闲Buffer
-	void ReleaseFreeBuffer();
-
-	//申请Context
-	PIOContext AllocateContext(SOCKET sock);
-
-	//释放Context
-	void ReleaseContext(PIOContext pContext);
-
-	//清空空闲Context
-	void ReleaseFreeContext();
-
-	//添加一个新的连接
-	bool AddConnect(PIOContext pContext);
-
-	//插入一个Accept请求
-	bool InsertAccept(PIOBuffer pBuffer);
-
-	//删除一个Accept请求
-	bool RemoveAccept(PIOBuffer pBuffer);
-
-	//取得下一个Read IO
-	PIOBuffer GetNextReadBuffer(PIOContext pContext,PIOBuffer pBuffer);
-
-	//抛出一个Accept
-	bool PostAccept(PIOBuffer pBuffer);
-
-	//抛出一个Send
-	bool PostSend(PIOContext pContext,PIOBuffer pBuffer);
-
-	//抛出一个Recv
-	bool PostRecv(PIOContext pContext,PIOBuffer pBuffer);
+	bool PostAccept(PIOBuffer pBuffer);					//抛出一个Accept
+	bool PostSend(PIOContext pContext,
+		PIOBuffer pBuffer,int nSize);					//抛出一个Send
+	bool PostRecv(PIOContext pContext,
+		PIOBuffer pBuffer);								//抛出一个Recv
 
 	//IO的处理
 	void HandleIOEvent(DWORD dwKey,PIOBuffer pBuffer,DWORD dwTran,int nError);
-
-	//处理Accept请求
 	void HandleAcceptEvent(DWORD dwTran, PIOBuffer pBuffer);
-
-	//处理Recv请求
 	void HandleRecvEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffer);
-
-	//处理Send请求
 	void HandleSendEvent(DWORD dwTran, PIOContext pContext, PIOBuffer pBuffer);
 
-protected:
-	//客户加入连接
-	void virtual OnClientConnect(PIOContext pContext, PIOBuffer pBuffer) {};
-
-	//客户关闭连接
-	void virtual OnClientClose(PIOContext pContext, PIOBuffer pBuffer) {};
-
-	//连接发生错误
-	void virtual OnConnectErro(PIOContext pContext, PIOBuffer pBuffer, int nError) {};
-
-	//发送操作完成
-	void virtual OnSendFinish(PIOContext pContext, PIOBuffer pBuffer) {};
-
-	//接收操作完成
-	void virtual OnRecvFinish(PIOContext pContext, PIOBuffer pBuffer) {};
-
+	//事件通知
+	virtual void OnEvent(EventType eType, void* pData,
+		PIOBuffer pBuffer, PIOContext pContext) = 0;
 public:
 	MaxSvr();
 	virtual ~MaxSvr();
 
 public:
-	inline void SetMaxFreeBuffer(int nValue)
+	inline void SetMaxBufferFree(int nValue)
 	{
-		m_nMaxFreeBuffer = nValue;
+		m_nMaxBufferFree = nValue;
 	}
-
-	inline void SetMaxFreeContext(int nValue)
+	inline void SetMaxContextFree(int nValue)
 	{
-		m_nMaxFreeContext = nValue;
+		m_nMaxContextFree = nValue;
 	}
-
-	inline void SetMaxAccept(int nValue)
+	inline void SetMaxBufferAccept(int nValue)
 	{
-		m_nMaxAccept = nValue;
+		m_nMaxBufferAccept = nValue;
 	}
-
-	inline void SetMaxConnectClient(int nValue)
+	inline void SetMaxContextClient(int nValue)
 	{
-		m_nMaxAccept = nValue;
+		m_nMaxContextClient = nValue;
 	}
-
-	inline void SetThreadCount(int nValue)
+	inline void SetHandleThreadCount(int nValue)
 	{
-		m_nThreadCount = nValue;
+		m_nHandleThreadCount = nValue;
 	}
-
 	inline void SetBufferSize(int nValue)
 	{
 		m_nBufferSize = nValue;
 	}
-
 	inline void SetPort(int nValue)
 	{
 		m_nPort = nValue;
 	}
-
 	inline void SetInitAccept(int nValue)
 	{
-		m_nInitAccept = nValue;
+		m_nInitAcceptCount = nValue;
 	}
-
 	inline void SetInitRecv(int nValue)
 	{
-		m_nInitRecv = nValue;
+		m_nInitRecvCount = nValue;
 	}
-
-	inline void SetMaxSend(int nValue)
+	inline int  GetConnectCount()
 	{
-		m_nMaxSend = nValue;
+		return m_cListContextClient.size();
 	}
 
-public:
-	//开始服务
-	bool StartServer();
-
-	//结束服务
-	void StopServer();
-
-	//关闭所有连接
-	void CloseConnects();
-
-	//获取当前连接客户数量
-	inline int GetConnectCount()
-	{
-		return m_vConnectClient.size();
-	}
+	bool StartServer();											//开始服务
+	bool StopServer();											//结束服务
+	bool CloseClientConnect(SOCKET sClientsock);				//关闭一个客户连接
+	bool CloseAllClientConnect();								//关闭所有连接
+	bool SendBufferToClent(SOCKET sClientSock,
+		void* pData,int nSize);									//发送数据给客户
 };
-
-
-//协助线程同步
-class CLock
-{
-private:
-	PCRITICAL_SECTION m_pLock;
-	bool m_bUnLock;
-public:
-	CLock(PCRITICAL_SECTION stLock)
-	{
-		m_pLock = stLock;
-		EnterCriticalSection(m_pLock);
-		m_bUnLock = false;
-	}
-	~CLock()
-	{
-		UnLock();
-	}
-public:
-	void UnLock()
-	{
-		if (!m_bUnLock)
-		{
-			LeaveCriticalSection(m_pLock);
-			m_bUnLock = true;
-		}
-	}
-};
-
