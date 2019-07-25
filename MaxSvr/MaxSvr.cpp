@@ -124,7 +124,7 @@ void MaxSvr::_WorkerThread(MaxSvr* pThis)
 			&dwTrans, (LPDWORD)&dwKey, (LPOVERLAPPED*)&pOverlapped, WSA_INFINITE);
 
 		//通知退出工作线程
-		if (dwTrans == -1)
+		if (dwTrans == -1 || pThis->m_hIOComplete == 0)
 			return;
 
 		//获取Buffer结构
